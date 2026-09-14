@@ -3,9 +3,46 @@
 Commands assume the repository root and the same AWS identity used during deployment. Recover the context variables in a new terminal with:
 
 ```bash
+export KUBECONFIG="$PWD/terraform/kubeconfig"
 export POC_CLUSTER="$(terraform -chdir=terraform/01-cluster output -raw cluster_name)"
 export POC_REGION="$(terraform -chdir=terraform/01-cluster output -raw region)"
 ```
+
+## Configuration and manual deployment
+
+`scripts/deploy.sh` preserves existing `terraform.tfvars`, `terraform.tfvars.json` and auto-loaded tfvars. With no inputs, `configure.py` detects the current account, egress `/32` and Spot service-linked role, then writes a private `01-cluster/terraform.tfvars.json` with mode 0600. `POC_ACCOUNT_ID` optionally checks the account before initial configuration; `POC_REGION`, `POC_CLUSTER_NAME` and `POC_API_CIDR` override detected/default values. Edit existing tfvars directly on later runs. Keep these files, state, saved plans and kubeconfig out of Git.
+
+`cluster_admin_arn = null` uses the EKS module's access entry for the Terraform caller. Its IAM session-context lookup resolves assumed-role and SSO sessions to the permanent IAM role. Keep using that identity for every stage. For stable team/CI access, set an explicit permanent IAM ARN; changing the caller with the null default can change the access entry on the next apply. The account ID remains an AWS-provider guardrail, and `api_allowed_cidrs` stays restricted rather than defaulting to worldwide access.
+
+To configure manually, copy `01-cluster/terraform.tfvars.example` to `01-cluster/terraform.tfvars` and edit the account ID and API CIDR. Then run:
+
+```bash
+export KUBECONFIG="$PWD/terraform/kubeconfig"
+terraform -chdir=terraform/01-cluster init -lockfile=readonly
+terraform -chdir=terraform/01-cluster apply
+export POC_CLUSTER="$(terraform -chdir=terraform/01-cluster output -raw cluster_name)"
+export POC_REGION="$(terraform -chdir=terraform/01-cluster output -raw region)"
+aws eks update-kubeconfig --region "$POC_REGION" --name "$POC_CLUSTER" \
+  --alias "$POC_CLUSTER" --kubeconfig "$KUBECONFIG"
+terraform -chdir=terraform/02-karpenter init -lockfile=readonly
+terraform -chdir=terraform/02-karpenter apply
+terraform -chdir=terraform/03-nodepools init -lockfile=readonly
+terraform -chdir=terraform/03-nodepools apply
+```
+
+## Versions
+
+Checked on 14 September 2026:
+
+| Component | Pin / source |
+| --- | --- |
+| EKS | 1.36, latest listed in [AWS's release calendar](https://docs.aws.amazon.com/eks/latest/userguide/kubernetes-versions.html) |
+| Karpenter controller / CRDs | 1.14.1; the [compatibility matrix](https://karpenter.sh/docs/upgrading/compatibility/) lists >=1.13 for Kubernetes 1.36 |
+| AL2023 images | `ami_alias = "al2023@v20260903"`, `ami_release = "1.36.3-20260903"`; [AMI release](https://github.com/awslabs/amazon-eks-ami/releases/tag/v20260903) |
+| EKS / VPC modules | 21.25.0 / 6.7.2 |
+| Providers | AWS 6.64.0, Helm 3.3.0, Kubernetes 2.38.0; committed locks in each root |
+
+Add-ons resolve a compatible EKS build unless `addon_versions` supplies tested pins. To try the Region's current images explicitly, set `ami_alias = "al2023@latest"` and `ami_release = null`; review the resulting node replacements. Dated images remain the reproducible default.
 
 ## Preflight
 
@@ -19,7 +56,7 @@ aws ec2 describe-availability-zones --region eu-west-1 \
   --filters Name=zone-type,Values=availability-zone --query 'AvailabilityZones[].ZoneName'
 aws iam get-role --role-name AWSServiceRoleForEC2Spot --query Role.Arn
 aws ssm get-parameter --region eu-west-1 \
-  --name /aws/service/eks/optimized-ami/1.36/amazon-linux-2023/x86_64/standard/recommended/release_version \
+  --name /aws/service/eks/optimized-ami/1.36/amazon-linux-2023/arm64/standard/recommended/release_version \
   --query Parameter.Value --output text
 aws ec2 describe-images --region eu-west-1 --owners amazon \
   --filters 'Name=name,Values=amazon-eks-node-al2023-*-standard-1.36-v20260903' \

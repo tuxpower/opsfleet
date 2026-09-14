@@ -2,13 +2,15 @@
 
 **14 September 2026 — local validation, without creating AWS resources.**
 
-The submission has passed the checks below. A live AWS plan/apply, successful EC2 launches and cleanup have **not** been demonstrated in this environment. Static validation cannot establish regional capacity, account quotas, effective IAM permissions or successful node bootstrap.
+The checks below passed locally. **A live AWS plan/apply, EC2 launches and cleanup remain unverified.** The available AWS session had expired during the deployment preflight; no AWS infrastructure was created. Local checks cannot establish regional capacity, account quotas, effective IAM permissions or successful node bootstrap.
 
 | Check | Result and scope |
 | --- | --- |
 | `terraform fmt -check -recursive terraform` | Passed |
 | `terraform init -backend=false -input=false -lockfile=readonly` | Passed in all three roots, reusing the committed provider locks |
 | `terraform validate -no-color` | Passed in all three roots with Terraform 1.16.2 on Linux amd64 |
+| Mocked Terraform plans | Two passed against the real module graph: SSO caller resolves to its permanent IAM role with one NAT; an explicit operator role, three NATs and AMI overrides also plan successfully. AWS responses are mocked |
+| Deployment helper tests | Nine passed using fake AWS/Terraform executables: configuration preservation, account/CIDR checks, Spot-role error handling, stage ordering, explicit auto-approval, isolated kubeconfig and stopping on a failed stage |
 | Example rendering | `kubectl kustomize terraform/examples` produced one Namespace, two Deployments and two Services with the expected namespace |
 | Verification script | Python parsing, CLI help and Bash syntax checks passed; the runtime verifier itself was not run against a cluster |
 | Helm values | Evaluated the actual Terraform expressions in an isolated temporary directory with placeholder connection outputs |
@@ -37,7 +39,7 @@ From the repository root, with Terraform, kubectl and Python 3 installed:
 bash terraform/scripts/validate.sh
 ```
 
-This downloads pinned dependencies if necessary, validates the Terraform roots sequentially and renders the examples. It does not contact the EKS API or apply infrastructure. The extended Helm/CRD field review described above was a separate local review, not part of this script.
+This downloads pinned dependencies if necessary, validates the roots sequentially, runs mocked plans and helper tests, and renders the examples. It does not contact the EKS API or apply infrastructure. The extended Helm/CRD field review above was a separate local review.
 
 ## Runtime acceptance
 
@@ -45,7 +47,7 @@ Follow [README.md](README.md) to deploy into the intended assessment account, th
 
 | Acceptance condition | Evidence to capture |
 | --- | --- |
-| EKS and system nodes healthy | EKS status, system-node readiness, healthy CNI/Pod Identity/CoreDNS/kube-proxy |
+| EKS and system nodes healthy | EKS status, at least two ready Graviton On-Demand system nodes, healthy CNI/Pod Identity/CoreDNS/kube-proxy |
 | Karpenter ready | Two available controller replicas; EC2NodeClass and both NodePools Ready |
 | Both architectures provision successfully | `python3 terraform/scripts/verify.py`: ready demo replicas, node architecture/pool labels, no public node IP, and both HTTP responses |
 | Actual Spot capacity used | Apply the [Spot-only selectors](OPERATIONS.md#spot-only-acceptance-test), then run `python3 terraform/scripts/verify.py --require-spot` |
