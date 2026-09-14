@@ -18,7 +18,7 @@ output "connection" {
     karpenter_version          = local.karpenter_version
     interruption_queue         = module.karpenter.queue_name
     instance_profile           = module.karpenter.instance_profile_name
-    ami_alias                  = local.ami_alias
+    ami_alias                  = var.ami_alias
   }
 }
 

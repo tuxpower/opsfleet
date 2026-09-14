@@ -2,8 +2,6 @@ locals {
   # Verified on 2026-09-14. Upgrade these together after checking compatibility.
   kubernetes_version = "1.36"
   karpenter_version  = "1.14.1"
-  ami_alias          = "al2023@v20260903"
-  ami_release        = "1.36.3-20260903"
 
   vpc_cidr = "10.42.0.0/16"
   azs      = slice(sort(data.aws_availability_zones.available.names), 0, min(3, length(data.aws_availability_zones.available.names)))
@@ -81,8 +79,8 @@ module "eks" {
   endpoint_public_access       = true
   endpoint_public_access_cidrs = var.api_allowed_cidrs
 
-  enable_cluster_creator_admin_permissions = false
-  access_entries = {
+  enable_cluster_creator_admin_permissions = var.cluster_admin_arn == null
+  access_entries = var.cluster_admin_arn == null ? {} : {
     operator = {
       principal_arn = var.cluster_admin_arn
       policy_associations = {
@@ -111,7 +109,7 @@ module "eks" {
       before_compute = true
       addon_version  = lookup(var.addon_versions, "vpc-cni", null)
       pod_identity_association = [{
-        role_arn        = aws_iam_role.vpc_cni.arn
+        role_arn        = data.aws_iam_role.vpc_cni_ready.arn
         service_account = "aws-node"
       }]
     }
@@ -132,9 +130,9 @@ module "eks" {
 
   eks_managed_node_groups = {
     system = {
-      ami_type                   = "AL2023_x86_64_STANDARD"
-      ami_release_version        = local.ami_release
-      instance_types             = ["m6i.large", "m6a.large", "m7i.large"]
+      ami_type                   = "AL2023_ARM_64_STANDARD"
+      ami_release_version        = var.ami_release
+      instance_types             = ["m7g.large", "m6g.large"]
       capacity_type              = "ON_DEMAND"
       min_size                   = 2
       desired_size               = 2
@@ -168,6 +166,4 @@ module "eks" {
   # Only this node SG and private workload subnets receive discovery tags.
   node_security_group_tags = { "karpenter.sh/discovery" = var.cluster_name }
   tags                     = local.tags
-
-  depends_on = [aws_iam_role_policy_attachment.vpc_cni]
 }

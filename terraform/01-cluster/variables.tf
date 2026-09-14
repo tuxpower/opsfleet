@@ -9,12 +9,35 @@ variable "aws_account_id" {
 }
 
 variable "cluster_admin_arn" {
-  description = "Permanent IAM role/user ARN for the operator running all three stages; not an STS session ARN."
+  description = "Optional permanent operator IAM ARN. When null, grant the current Terraform caller access; assumed roles/SSO are resolved to their IAM role."
   type        = string
+  default     = null
 
   validation {
-    condition     = can(regex("^arn:aws:iam::[0-9]{12}:(role|user)/.+$", var.cluster_admin_arn))
+    condition     = var.cluster_admin_arn == null || can(regex("^arn:aws:iam::[0-9]{12}:(role|user)/.+$", var.cluster_admin_arn))
     error_message = "Use an IAM role or user ARN, including its path; do not use an assumed-role session ARN."
+  }
+}
+
+variable "ami_alias" {
+  description = "Karpenter AL2023 AMI alias. Use a tested dated release; al2023@latest is available for an explicit POC override."
+  type        = string
+  default     = "al2023@v20260903"
+
+  validation {
+    condition     = can(regex("^al2023@(v[0-9]{8}|latest)$", var.ami_alias))
+    error_message = "Use al2023@vYYYYMMDD or explicitly choose al2023@latest."
+  }
+}
+
+variable "ami_release" {
+  description = "EKS managed-node AL2023 release. Null lets EKS select the release for the configured Kubernetes version."
+  type        = string
+  default     = "1.36.3-20260903"
+
+  validation {
+    condition     = var.ami_release == null || can(regex("^[0-9]+\\.[0-9]+\\.[0-9]+-[0-9]{8}$", var.ami_release))
+    error_message = "Use an EKS release such as 1.36.3-20260903, or null."
   }
 }
 

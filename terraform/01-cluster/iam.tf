@@ -33,6 +33,12 @@ resource "aws_iam_role_policy_attachment" "vpc_cni" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
+# Only the CNI add-on waits for its attached permissions, not the whole EKS module.
+data "aws_iam_role" "vpc_cni_ready" {
+  name       = aws_iam_role.vpc_cni.name
+  depends_on = [aws_iam_role_policy_attachment.vpc_cni]
+}
+
 module "karpenter" {
   source  = "terraform-aws-modules/eks/aws//modules/karpenter"
   version = "21.25.0"
