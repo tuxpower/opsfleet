@@ -2,7 +2,7 @@
 
 **14 September 2026 — local validation, without creating AWS resources.**
 
-The checks below passed locally. **A live AWS plan/apply, EC2 launches and cleanup remain unverified.** The available AWS session had expired during the deployment preflight; no AWS infrastructure was created. Local checks cannot establish regional capacity, account quotas, effective IAM permissions or successful node bootstrap.
+This validation round covers code and local checks only. The checks below passed; **no live AWS plan/apply, EC2 launches or teardown were performed.** Local checks cannot establish regional capacity, account quotas, effective IAM permissions or successful node bootstrap.
 
 | Check | Result and scope |
 | --- | --- |
@@ -41,9 +41,9 @@ bash terraform/scripts/validate.sh
 
 This downloads pinned dependencies if necessary, validates the roots sequentially, runs mocked plans and helper tests, and renders the examples. It does not contact the EKS API or apply infrastructure. The extended Helm/CRD field review above was a separate local review.
 
-## Runtime acceptance
+## Future runtime acceptance
 
-Follow [README.md](README.md) to deploy into the intended assessment account, then capture these results before describing the POC as runtime-tested:
+For a future deployment, follow [README.md](README.md) and capture these results before describing the POC as runtime-tested:
 
 | Acceptance condition | Evidence to capture |
 | --- | --- |
