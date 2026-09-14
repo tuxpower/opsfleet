@@ -1,0 +1,68 @@
+// Render: dot -Tsvg architecture/diagrams/innovate.dot -o architecture/diagrams/innovate.svg
+digraph Innovate {
+  graph [rankdir=TB, bgcolor="#ffffff", pad=0.3, nodesep=0.35, ranksep=0.6,
+    splines=polyline, fontname="DejaVu Sans", fontsize=22, fontcolor="#12263a",
+    label="Innovate Inc. | Production and recovery", labelloc=t, labeljust=l,
+    compound=true, newrank=true];
+  node [shape=box, style="rounded,filled", fillcolor="#ffffff", color="#adc0d1",
+    fontname="DejaVu Sans", fontsize=14, fontcolor="#172b40", margin="0.18,0.14", penwidth=1.2];
+  edge [color="#316f9b", arrowsize=0.7, penwidth=1.4,
+    fontname="DejaVu Sans", fontsize=11, fontcolor="#365369"];
+
+  users [label="Users\nReact SPA / HTTPS", fillcolor="#e7f4fc", color="#3a8bbb"];
+  ci [label="GitHub Actions + Git\nTest, build, sign, promote\nShort-lived AWS OIDC roles", fillcolor="#f1edfc", color="#8b78ba"];
+
+  subgraph cluster_shared {
+    label="SHARED / SECURITY ACCOUNT"; fontsize=13; color="#c9d2dc"; style="rounded,filled"; fillcolor="#f7f9fb";
+    registry [label="ECR\nImmutable amd64 + arm64 images\nScoped cross-account pulls"];
+    audit [label="Central audit / security\nProtected daily backup copies"];
+  }
+
+  subgraph cluster_prod {
+    label="PRODUCTION ACCOUNT  |  Primary: eu-west-1";
+    fontsize=16; color="#699bbb"; penwidth=1.6; style="rounded,filled"; fillcolor="#f4f9fd";
+    edge_services [label="Route 53 / CloudFront\nWAF + ACM\nStatic cache / uncached API", fillcolor="#e1f0fb", color="#4b8bb7"];
+    spa [label="Private S3 REST origin\nVersioned React assets\nOrigin Access Control", fillcolor="#eaf5ee", color="#66a278"];
+    services [label="Managed AWS services\nSecrets Manager / KMS / Pod Identity\nCloudWatch alerts / interruption queue"];
+
+    subgraph cluster_vpc {
+      label="PRODUCTION VPC  |  Three availability zones";
+      fontsize=14; color="#8ab29b"; style="rounded,filled"; fillcolor="#f6fbf7";
+      alb [label="Internal ALB\nCloudFront VPC origin\nPrivate ingress subnets", fillcolor="#e3f2e8", color="#649a78"];
+      subgraph cluster_eks {
+        label="EKS  |  Private API + private application subnets"; fontsize=13;
+        color="#a3b9ce"; style="rounded,filled"; fillcolor="#ffffff";
+        api [label="Flask / Gunicorn\n3+ replicas across AZs\nHPA, probes, PDB\nOn-Demand baseline", fillcolor="#e8f1fb", color="#6a91ba"];
+        platform [label="3 On-Demand core nodes\nKarpenter (2 replicas) + Argo CD\nAt growth: dedicated app pools\namd64 / Graviton / Spot burst"];
+        platform -> api [style=dashed, label="schedule / reconcile"];
+      }
+      db [label="RDS for PostgreSQL\nPrimary + synchronous standby\nIsolated DB subnets / Multi-AZ", fillcolor="#e5f2eb", color="#639b7a"];
+      egress [label="NAT per AZ + AWS endpoints\nControlled outbound access\nNo public worker IPs"];
+      alb -> api [label="HTTPS / IP targets"];
+      api -> db [label="PostgreSQL TLS :5432"];
+      platform -> egress [style=dashed, label="outbound"];
+    }
+    edge_services -> spa [label="static / OAC"];
+    edge_services -> alb [label="/api/* / HTTPS"];
+    services -> platform [style=dashed, label="scoped access / signals"];
+  }
+
+  subgraph cluster_recovery {
+    label="RECOVERY REGION  |  eu-central-1"; fontsize=14;
+    color="#c8a96d"; style="rounded,filled"; fillcolor="#fffbf2";
+    recovery [label="Replicated automated RDS backups\nRecovery images, assets and KMS access\nRestore VPC / EKS / RDS on incident\nTarget RPO <=15 min / RTO <=4 h", fillcolor="#fff3d9", color="#bd9a55"];
+  }
+
+  users -> edge_services [label="HTTPS"];
+  ci -> registry [style=dashed, label="publish"];
+  ci -> platform [style=dashed, label="Git desired state"];
+  registry -> platform [style=dashed, label="pull images"];
+  db -> audit [style=dashed, label="daily copies"];
+  db -> recovery [style=dashed, label="asynchronous replication"];
+  {rank=same; users; ci;}
+  {rank=same; registry; edge_services;}
+  {rank=same; spa; alb; services;}
+  {rank=same; db; egress; audit;}
+  legend [shape=plaintext, label="Solid: request / data flow     Dashed: delivery / management / asynchronous protection\nProduction view. Management and non-production use separate accounts.\nRecovery targets require measured restore exercises.", fontsize=11, fontcolor="#596c7d"];
+  recovery -> legend [style=invis];
+}

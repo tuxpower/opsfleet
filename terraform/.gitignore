@@ -1,0 +1,21 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+tfplan
+*.plan.json
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+kubeconfig*
+.validation/
+__pycache__/
+
+# Commit provider lock files and sanitized *.tfvars.example files.

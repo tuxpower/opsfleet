@@ -1,0 +1,11 @@
+aws_account_id    = "123456789012"
+cluster_admin_arn = "arn:aws:iam::123456789012:role/AssessmentOperator"
+# Replace with your actual public egress IPv4 address (or runner egress CIDR).
+api_allowed_cidrs = ["203.0.113.10/32"]
+
+region             = "eu-west-1"
+cluster_name       = "opsfleet-poc"
+single_nat_gateway = true
+
+# Set true only after confirming this account has no AWSServiceRoleForEC2Spot.
+create_spot_service_linked_role = false
