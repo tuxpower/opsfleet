@@ -1,14 +1,31 @@
 # Innovate Inc. — AWS architecture
 
-**Design date: 14 September 2026.** Deploy the React SPA through CloudFront and private S3, the Flask API on Amazon EKS, and PostgreSQL on Amazon RDS. Use four AWS accounts, one primary Region and three availability zones (AZs). Keep application delivery automated and operations small enough for a startup team to own.
+**Design date: 14 September 2026.** Serve React through CloudFront/private S3, run Flask on Amazon EKS, and store PostgreSQL data in Amazon RDS. Four AWS accounts separate ownership and access; production spans three availability zones within the primary Region.
 
-This is a proposed production design. The [Terraform POC](../terraform/README.md) demonstrates EKS/Karpenter/x86/Graviton/Spot provisioning; it does not deploy this entire design. Its production differences are listed below.
+## Decisions at a glance
+
+| Area | Decision |
+| --- | --- |
+| Cloud | AWS; reuse the assessment's EKS expertise and Terraform modules |
+| Accounts | Management, shared/security, non-production, production |
+| Geography | Primary `eu-west-1`, three production AZs; recovery in `eu-central-1` |
+| Ingress | CloudFront + WAF; private S3 for React, internal ALB for `/api/*` |
+| Compute | EKS; platform-only Graviton system nodes; separate On-Demand API pools and Spot burst/job pools |
+| Database | RDS PostgreSQL Multi-AZ DB instance with one standby |
+| Regional recovery | Replicated backups; target RPO <=15 minutes / RTO <=4 hours, verified by drills |
+| Launch budget | Approximately **$1,200–1,300/month** for production + non-production before traffic; [assumptions below](#launch-cost-estimate) |
+
+The [Terraform POC](../terraform/README.md) implements the cluster/autoscaling part. This document proposes the complete production platform.
+
+## Why AWS
+
+AWS and GCP can both support this application. I recommend AWS because it lets the team reuse the assessment's EKS/Karpenter implementation and operating knowledge, while RDS, CloudFront and AWS Organizations cover the database, delivery and account-isolation requirements. This is an operational-fit decision, not a claim that AWS is universally cheaper. If Innovate already had a GCP platform or stronger GCP skills, [GKE Autopilot](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/autopilot-overview) and Cloud SQL would merit evaluation; neither prior investment is assumed here.
 
 ## Assumptions and service targets
 
 Assume an EU user base, `eu-west-1` as the primary Region, and `eu-central-1` as an allowed recovery Region. Confirm customer location, data residency, budget, existing identity provider and support ownership before implementation. User count alone does not determine capacity: measure peak requests/second, request cost, response sizes, concurrent sessions, database size and growth.
 
-Proposed launch targets are **99.9% monthly availability** for essential API journeys and **p95 API latency below 300 ms** at agreed peak load. These are design targets requiring load/failure tests, not a claim about measured performance. Establish recovery objectives with the business; the initial targets and mechanisms appear in the recovery table below. Assume stateless API replicas, no required WebSockets/gRPC, and sensitive data stored in PostgreSQL rather than pod-local files.
+Proposed launch targets are **99.9% monthly availability** for essential API journeys and **p95 API latency below 300 ms** at agreed peak load. Validate these and the recovery targets through load/failure tests. Assume stateless API replicas, no required WebSockets/gRPC, and sensitive data stored in PostgreSQL rather than pod-local files.
 
 ## High-level diagram (HLD)
 
@@ -45,9 +62,9 @@ Use independent IPv4 VPCs: production `10.50.0.0/16`, non-production `10.60.0.0/
 | Isolated database | `10.50.208.0/24`, `.209.0/24`, `.210.0/24` | RDS subnet group; no internet/NAT default route |
 | Control-plane interfaces | `10.50.216.0/27`, `.217.0/27`, `.218.0/27` | EKS private endpoint interfaces; reserved IP headroom |
 
-The abbreviated CIDRs retain the `10.50` prefix. The managed EKS control plane runs in AWS-managed infrastructure and connects through these interfaces. EKS API access is **private only** in production. Operators connect through an authenticated VPN or managed private-access path; Terraform runs on an ephemeral runner with VPC connectivity. Non-production has its own access path and no route to production. There are no public worker IPs or SSH bastions.
+The abbreviated CIDRs retain the `10.50` prefix. The managed EKS control plane runs in AWS-managed infrastructure and connects through these interfaces. EKS API access is **private only** in production. Operators and Terraform use short-lived VPC runners accessed through audited Systems Manager sessions; runner security groups allow the private API connection. Each environment has separate runner roles and no route to the other's VPC. Workers and runners have no public IPs or inbound SSH access.
 
-Enable VPC DNS, an S3 gateway endpoint, and private endpoints for high-value AWS access such as ECR API/DKR, Secrets Manager and EKS Auth. Give endpoint security groups inbound 443 only from required workloads/nodes. Evaluate additional STS, Logs, SQS and EC2 endpoints against measured NAT traffic and endpoint hourly costs. The API/control-plane endpoint and EKS Auth endpoint serve different purposes. Retain NAT for Git/image dependencies and public APIs needed by controllers; private subnets alone do not mean an internet-isolated cluster. Enable flow logs with retention and alerting.
+Enable VPC DNS and an S3 gateway endpoint in each VPC. Production also gets ECR API/DKR, Secrets Manager and EKS Auth interface endpoints in three AZs; non-production initially uses NAT for those services. Give endpoint security groups inbound 443 only from required workloads/nodes. Add other endpoints when traffic or policy justifies their hourly cost. Retain NAT for external dependencies and controller APIs. Enable flow logs with retention and alerting.
 
 ### Request path and network enforcement
 
@@ -69,11 +86,21 @@ Use Secrets Manager for database credentials, scoped to the API's service accoun
 
 Use one production EKS cluster and one non-production cluster with the same Terraform modules and versioned add-ons. Start on a tested EKS standard-support version and schedule regular upgrades in non-production first. The assessment POC pins the latest listed EKS version, 1.36; production adoption also requires add-on and application qualification.
 
-At launch, use **three small On-Demand core nodes, one in each AZ**, provisioned by managed node groups with an explicit per-AZ minimum. A starting shape is 2 vCPUs / 8 GiB per node, preferably Graviton after verifying all images and native dependencies. These nodes host Karpenter, DNS, metrics-server, load-balancer/secret controllers and the small API baseline. This reduces the idle footprint. Reserve platform resources using requests, PriorityClasses, namespace quotas and admission rules; allow only approved baseline workloads to tolerate the core-node taint. Karpenter runs independently of its own provisioned capacity, with two replicas on separate nodes.
+Keep platform and application capacity separate from launch:
+
+| Capacity | Initial production allocation | Placement |
+| --- | --- | --- |
+| System | Three On-Demand `m7g.large` nodes, one per AZ through managed node groups | Tainted for platform services only: Karpenter, DNS, metrics-server, Argo CD and controllers |
+| API | Karpenter On-Demand NodePools; budget for three `c7g.large`-sized nodes across AZs | Three or more Flask replicas; hard On-Demand requirement, ARM preference with tested x86 fallback |
+| Burst / jobs | Separate diversified Spot NodePools; no idle minimum | Restartable jobs and, after testing, an optional API burst Deployment |
+
+Run two Karpenter replicas on separate system nodes. Use broad c/m/r families and both CPU architectures in application pools; the instance types above are sizing/cost examples, not single-type restrictions. Non-production starts with two system nodes, one application node and reduced replica counts.
+
+[EKS Auto Mode](https://docs.aws.amazon.com/eks/latest/userguide/automode.html) reduces node and infrastructure-controller maintenance and also supports [custom NodePools, Graviton and Spot](https://docs.aws.amazon.com/eks/latest/userguide/create-node-pool.html). This design retains self-managed Karpenter to reuse the assessment implementation, control controller/CRD upgrades and avoid the [additional Auto Mode node charge](https://aws.amazon.com/eks/pricing/); the team must own that maintenance, and Auto Mode is a sensible alternative if that operational burden outweighs the charge.
 
 Start the Flask Deployment with three replicas, one per AZ using topology-spread constraints plus hostname anti-affinity. Give each replica an initial request of 250m CPU / 512 MiB memory and a 768 MiB memory limit, then tune from load tests; avoid a restrictive CPU limit that introduces unnecessary throttling. Run Gunicorn with a measured worker count, never Flask's development server. Use startup/readiness/liveness probes, graceful SIGTERM handling and sufficient termination time. Readiness reflects whether a pod can serve; liveness should not restart every pod during a database outage. Use a PDB such as `maxUnavailable: 1` and rolling updates with `maxUnavailable: 0`, `maxSurge: 1`, with enough spare capacity for the surge.
 
-Enable HPA via metrics-server, initially 3–12 replicas with a starting CPU target of 60% and a stabilization window. CPU utilization depends on correct requests. Keep **On-Demand application NodePools available from launch** so HPA can expand beyond core-node capacity. Required API node affinity admits either the explicitly On-Demand core group or Karpenter On-Demand nodes, with a soft preference for available core capacity. Do not require a core-only label that prevents Karpenter from satisfying Pending pods. As load grows, remove the API's core toleration/affinity alternative and reserve those nodes exclusively for platform services. Verify scaling at peak load and when a node/AZ is lost. Merely allowing Spot and On-Demand in one pool does not reserve a reliable API baseline.
+Enable HPA via metrics-server, initially 3–12 replicas with a starting CPU target of 60% and a scale-down stabilization window. Requests determine both HPA utilization and Karpenter's capacity calculations. Pending API pods trigger additional On-Demand nodes; application pods have no system-node toleration. Test scaling, rolling updates and an AZ loss with enough headroom for replacement replicas.
 
 Karpenter creates nodes for unschedulable pods and consolidates spare capacity. Define separate `arm64` and `amd64` pools with broad c/m/r instance families and multiple AZs. Prefer ARM for compatible images; retain x86 for dependencies that need it. Use Spot for restartable jobs and, after interruption testing, a separate API burst Deployment behind the same Service. Burst capacity may allow On-Demand fallback; the minimum On-Demand API baseline remains independently sized. Keep checkpointed jobs/idempotent requests, interruption events via EventBridge/SQS, conservative disruption budgets and tested draining. PDBs cannot stop an EC2 Spot interruption. [Karpenter's NodePool](https://karpenter.sh/docs/concepts/nodepools/) and [disruption documentation](https://karpenter.sh/docs/concepts/disruption/) define these controls.
 
@@ -119,12 +146,30 @@ Run monthly isolated restore tests and quarterly AZ/region recovery exercises, r
 
 Use CloudWatch/ADOT for structured application/platform logs, metrics and traces, with PII redaction, retention and sampling. Monitor API success/latency, saturation, Pending pods, HPA/NodePool limits, Karpenter failures, available subnet IPs, RDS connections/storage/replica health, backup lag and deployment status. Page an identified on-call owner on user-impacting SLO burn and critical recovery failures; put capacity trends and low-priority security findings in a work queue. Keep dashboards, runbooks, ownership and an incident review process alongside code.
 
-The launch cost floor is deliberate: two EKS control planes, three production core nodes, a smaller non-production core group, production Multi-AZ RDS, NAT gateways, ALB, storage and observability. Accounts do not each require a cluster. The SPA uses object storage/CDN, core nodes initially share bounded baseline API capacity, and non-production uses reduced capacity and retention. One NAT in non-production is acceptable if its outage impact is accepted; production keeps one per AZ. Set budgets and anomaly alerts, ECR/log lifecycle policies, storage growth limits and tags from day one. Model the chosen Region and expected traffic in the [AWS Pricing Calculator](https://calculator.aws/); validate data-transfer and NAT costs before buying commitments. Purchase Savings Plans only for measured steady usage and leave burst capacity flexible.
+### Launch cost estimate
+
+Budget **$1,200–1,300/month** for both environments, using 730 hours, Ireland On-Demand rates, nine always-on EC2 nodes and low ancillary-service usage. Separating application capacity from system nodes is included in this estimate. The count reflects the availability requirement rather than the initial daily user count.
+
+| Component | Monthly USD, rounded |
+| --- | ---: |
+| Two EKS standard-support control planes | $146 |
+| Five `m7g.large` system nodes: three production + two non-production | $332 |
+| Four `c7g.large`-sized application nodes: three production + one non-production | $226 |
+| PostgreSQL: production Multi-AZ `db.t4g.medium`, dev `db.t4g.micro`, 100/20 GiB gp3 | $141 |
+| Four NAT gateways and their public IPv4 addresses | $155 |
+| Two internal ALBs, fixed hourly charge | $37 |
+| Four production interface endpoints in three AZs | $96 |
+| Nine 30-GiB gp3 node volumes | $24 |
+| Small logs/metrics, WAF, S3/ECR, DNS, keys/secrets, backups and runner allowance | $40–90 |
+
+Rates were checked on 14 September 2026; [calculations and primary pricing sources](COSTS.md) make the estimate reproducible. It excludes VAT, support plans, material data transfer/request volume, extra I/O and burst compute. Recheck using the [AWS Pricing Calculator](https://calculator.aws/) before provisioning.
+
+Set budgets, anomaly alerts, resource tags and ECR/log lifecycle policies from day one. Schedule unused non-production worker capacity, use its smaller Single-AZ database and one NAT, and buy Savings Plans only after measuring steady usage. EKS control-plane charges continue when worker nodes are stopped. Production keeps per-AZ egress and its On-Demand API baseline.
 
 | Stage / measured trigger | Change |
 | --- | --- |
-| Launch; low request rate | Static SPA delivery, three API replicas on bounded On-Demand core capacity, managed PostgreSQL and basic operational ownership |
-| API saturation or core-resource pressure | Move API onto dedicated On-Demand pools, tune requests/HPA, add tested Spot burst/worker capacity and raise quotas |
+| Launch; low request rate | Static SPA delivery, three API replicas on dedicated On-Demand pools, managed PostgreSQL and operational ownership |
+| API saturation | Tune requests/HPA and database pools, add tested Spot burst/worker capacity and raise quotas |
 | Slow queries or DB saturation | Fix indexes/queries and pool sizing first; scale RDS vertically, then add read replicas/cache only for suitable access patterns |
 | Long-running work | Introduce SQS and independently autoscaled workers, with idempotency, dead-letter handling and suitable Spot checkpoints |
 | Millions of users / stronger recovery targets | Load-test actual RPS and working set; consider data partitioning or Aurora after benchmarking; add warm regional recovery when justified |
@@ -137,9 +182,9 @@ CloudFront, HPA and Karpenter do not remove database or application bottlenecks.
 | --- | --- | --- |
 | Accounts and state | One supplied account; local stage states | Four accounts; encrypted/locked remote state and scoped CI roles |
 | API and egress | Public API allowlist plus private endpoint; one NAT by default | Private EKS API, controlled private operator/runner access, NAT per AZ |
-| Core capacity | Two On-Demand system-only nodes | Three core nodes across AZs; bounded API baseline initially, dedicated API pools as load grows |
+| Core capacity | Two Graviton On-Demand system-only nodes | Three system-only Graviton nodes across AZs; API on separate On-Demand pools from launch |
 | Workloads | x86/ARM HTTP demos with Spot preference and fallback | Flask API with reliable On-Demand baseline, tested ARM builds and selected Spot workloads |
 | Application services | ClusterIP demo Services | CloudFront/WAF, private S3/internal ALB, Cognito, RDS and secret management |
 | Operational controls | Basic EKS/flow logs and placement verifier | Enforced network policies, CI/GitOps, SLO alerts, protected backups and exercised DR |
 
-The source articles guide the design principles; version-specific configuration is checked against current upstream AWS/Karpenter documentation. This proposal does not claim that Opsfleet mandates every product or setting selected here.
+The Opsfleet articles guide the design principles; current AWS/Karpenter documentation supplies version-specific details.

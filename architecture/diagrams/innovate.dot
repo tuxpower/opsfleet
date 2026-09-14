@@ -32,8 +32,8 @@ digraph Innovate {
       subgraph cluster_eks {
         label="EKS  |  Private API + private application subnets"; fontsize=13;
         color="#a3b9ce"; style="rounded,filled"; fillcolor="#ffffff";
-        api [label="Flask / Gunicorn\n3+ replicas across AZs\nHPA, probes, PDB\nOn-Demand baseline", fillcolor="#e8f1fb", color="#6a91ba"];
-        platform [label="3 On-Demand core nodes\nKarpenter (2 replicas) + Argo CD\nAt growth: dedicated app pools\namd64 / Graviton / Spot burst"];
+        api [label="Flask / Gunicorn\n3+ replicas across AZs\nDedicated On-Demand NodePools\nGraviton preferred / x86 fallback", fillcolor="#e8f1fb", color="#6a91ba"];
+        platform [label="3 Graviton On-Demand system nodes\nKarpenter (2 replicas) + Argo CD\nPlatform services only\nSeparate Spot pools for burst / jobs"];
         platform -> api [style=dashed, label="schedule / reconcile"];
       }
       db [label="RDS for PostgreSQL\nPrimary + synchronous standby\nIsolated DB subnets / Multi-AZ", fillcolor="#e5f2eb", color="#639b7a"];
@@ -42,8 +42,8 @@ digraph Innovate {
       api -> db [label="PostgreSQL TLS :5432"];
       platform -> egress [style=dashed, label="outbound"];
     }
-    edge_services -> spa [label="static / OAC"];
-    edge_services -> alb [label="/api/* / HTTPS"];
+    edge_services -> spa [xlabel="static / OAC"];
+    edge_services -> alb [xlabel="/api/* / HTTPS"];
     services -> platform [style=dashed, label="scoped access / signals"];
   }
 
@@ -55,9 +55,9 @@ digraph Innovate {
 
   users -> edge_services [label="HTTPS"];
   ci -> registry [style=dashed, label="publish"];
-  ci -> platform [style=dashed, label="Git desired state"];
+  ci -> platform [style=dashed, xlabel="Git desired state"];
   registry -> platform [style=dashed, label="pull images"];
-  db -> audit [style=dashed, label="daily copies"];
+  db -> audit [style=dashed, xlabel=<<TABLE BORDER="0" CELLBORDER="0" CELLSPACING="0" CELLPADDING="3" BGCOLOR="#f4f9fd"><TR><TD>daily copies</TD></TR></TABLE>>];
   db -> recovery [style=dashed, label="asynchronous replication"];
   {rank=same; users; ci;}
   {rank=same; registry; edge_services;}
